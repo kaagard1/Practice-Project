@@ -27,5 +27,34 @@ You can also embed plots, for example:
 ```{r pressure, echo=FALSE}
 plot(pressure)
 ```
+```{r}
+# Define n
+n <- 1000
 
+# Empty data frame for 1000 simulated days
+data <- data.frame(day = seq(1:n),
+                demand = NA, # demand in Rockport
+                quantity = NA, # quantity sold
+                price = NA, # price per pound
+                cost = 10000, # cost of daily operations
+                earnings = NA) 
+
+gt(data)
+
+```
+
+```{r}
+
+set.seed(123)
+
+sim <- data |>
+  mutate(demand = sample(c(0, 1000, 2000, 3000, 4000, 5000, 6000),
+                         size = n,
+                         replace = T,
+                         prob = c(.02, .03, .05, .08, .33, .29, .2)),
+         quantity = ifelse(demand < 3500, demand, 3500),
+         price = rnorm(n = n, mean = 3.65, sd = .2),
+         earnings = price * quantity - cost)
+
+gt(sim)
 Note that the `echo = FALSE` parameter was added to the code chunk to prevent printing of the R code that generated the plot.
