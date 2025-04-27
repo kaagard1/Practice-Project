@@ -1,0 +1,728 @@
+---
+title: "HomeCredit Modeling"
+author: "DataLAKE"
+format: 
+  html:
+    toc: true
+    toc-depth: 3
+    toc-location: left
+    toc-float: true
+    toc-title: "Contents"
+    self-contained: true 
+execute:
+  include: true
+  eval: true    
+  warning: false
+  message: false
+---
+
+```{r - Set up, data import and inspections, echo = FALSE, warning=FALSE, message=FALSE}
+# This code chunk does not appear library messages to create a more aesthetic output file.
+
+# Package loading
+library(tidyverse)
+library(data.table)   
+library(caret)        
+library(nnet)         
+library(skimr)
+library(Hmisc)
+library(kableExtra)
+library(janitor)
+library(xgboost)
+library(pROC)
+library(Matrix)
+library(DiagrammeR)
+library(rpart.plot)
+library(randomForest)
+library(nnet)
+library(data.table)
+
+#dir<- "/Users/agold/Documents/MSBA program/IS 6412 Cap 2"
+#setwd(dir)
+```
+
+# Introduction
+
+The following model was completed by Lindsey Ahlander, Ashley Goldstein, Kyle Aagard, and Eliza Baier. 
+
+## Project Goal
+
+Our project goal is to develop a predictive model that helps Home Credit assess the likelihood of loan applicants defaulting on their payments. By analyzing alternative data sources such as transactional history, demographics, and telecommunications data, the model aims to improve risk assessment for individuals with little to no traditional credit history. The insights gained from this analysis will enhance Home Credit’s ability to provide responsible lending solutions while promoting financial inclusion.
+
+
+This notebook will aim to use several machine learning and deep learning methods to elicit relationships between data attributes and propensity for a client to default. We explored random forest, XGBoost, and MLP neural network models that implore black box methods. While this will limit interpretability, with complex business problems like HomeCredit it can help to increase the accuracy of future predictions. Our goal was to build a model that can correctly predict default outcomes with greater than 70% accuracy on new data. Ultimately, we found the best accuracy using an XGBoost model.
+
+## Business Problem
+
+Many individuals, particularly those who are unbanked or underbanked, struggle to access loans from traditional financial institutions due to a lack of formal credit history. This prevents them from owning property and building credit, limiting their financial opportunities. Home Credit seeks to bridge this gap by offering credit services to underserved populations. However, accurately predicting default risk is crucial to balancing financial accessibility with sustainable lending practices. By leveraging predictive analytics, Home Credit can better identify low-risk borrowers, increase revenue, and minimize default-related losses.
+
+## Analytical problem
+
+The primary analytical challenge is handling a high-dimensional, imbalanced dataset while ensuring that the model remains unbiased against underserved populations. Key issues include:
+
+-   Addressing class imbalance, as most applicants do not default (\~92%).
+-   Selecting the most relevant features from numerous variables to avoid overfitting and reduce model complexity.
+-   Cleaning and preprocessing data, including handling missing values, outliers, and inconsistencies.
+-   Integrating alternative data sources (such as transaction history) to improve predictions for applicants without traditional credit scores.
+-   Evaluating how dimensionality reduction and data transformations impact model performance and fairness.
+
+The final model should effectively differentiate between high- and low-risk borrowers, allowing Home Credit to make data-driven lending decisions that support financial inclusion while minimizing risk.
+
+# Data Preparation
+
+## Application Train Dataset Cleaning
+
+Initially, the application set required quite a bit of cleaning. We decided to remove columns with little to no variability or predictive power in addition to a majority of the columns that contained >50% missing data. This took us from 122 variables in the train dataset to 32 variables thereby eliminating a large portion of the dimensionality in the dataset.
+
+For the bureau.csv and bureau_balance.csv files, we flattened the data for categorical columns by selecting the most common value to represent each column. For numeric columns, we calculated the mean value. This was done prior to joining the two tables.
+
+We believed that the columns representing time had a higher potential to be predictive in this dataset compared to the application data. However, we identified some outliers that appeared to be data entry errors. For example, the columns representing days were intended to have negative values (indicating days before a certain event), but some entries contained positive values. To handle this, we converted all days to their absolute values. Additionally, any value representing more than 50 years was capped at 50 years.
+
+For columns representing the amount of credit or debt a customer had, we encountered extreme outliers, with some values reaching hundreds of millions. For example, the column AMT_CREDIT_SUM highest value was 170,100,000. To manage this, we capped any value over 1,000,000 to equal 1,000,000 and then binned the remaining values in increments of 100,000. This was done to reduce the skewness in the data. It is also worth noting that the majority of customers had little to no outstanding debt or credit in these columns.
+
+## Feature Engineering
+
+One factor we thought might be influential in a client's ability to repay debt was if they owned assets. To create this column, we analyzed any loan ID that marked yes for car or home ownership. Additionally, we created a variable to bin car ownership from the two variables OWN_CAR_AGE and FLAG_OWN_CAR to improve the descriptive and predictive power of the car ownership data. We did this by imputing the NAs with a -1 to indicate that a missing car age indicated the person did not have a car. Then we split the variable into 5-year bins to improve future model analytics. Our initial analysis showed these two variables to be potentially valuable predictors.
+
+```{r, echo = FALSE}
+## This code is included to show feature engineering but commented out because it is already mutated within the cleaned dataset.
+
+# Feature engineering: OWN_CAR_BIN
+# Impute OWN_CAR_AGE NAs with -1
+# train_clean <- train_clean |>
+#   mutate(OWN_CAR_AGE = ifelse(is.na(OWN_CAR_AGE), -1, OWN_CAR_AGE))
+# 
+# Create categorical OWN_CAR_BIN
+# train_clean$OWN_CAR_BIN <- train_clean$OWN_CAR_AGE |>
+#         cut(breaks = c(-1, 0, 5, 10, 15, 20, 25, 30, 100), 
+#         right = FALSE, 
+#         labels = c("No Car", "0-4 Years Old", "5-9 Years Old", "10-14 Years Old", 
+#                  "15-19 Years Old", "20-24 Years Old", "25-29 Years Old", "30+ Years Old"))
+
+# Check OWN_CAR_BIN variable
+# train_clean |>
+#   count(OWN_CAR_BIN) |>
+#   mutate(percentage = n / sum(n) * 100) |>
+#   arrange(desc(n))
+
+
+# Feature engineering: OWN_ASSET variable
+# Create binary OWN_ASSET variable
+# train_clean <- train_clean |>
+#   mutate(OWN_ASSET = ifelse(FLAG_OWN_REALTY == "Y" | FLAG_OWN_CAR == "Y", 1, 0))
+
+# Check OWN_ASSET variable
+# train_clean |>
+#   count(OWN_ASSET) |>
+#   mutate(percentage = n / sum(n) * 100) |>
+#   arrange(desc(n))
+```
+
+## Load Merged Bureau and Cleaned Application Data
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+
+# Load data
+application_train <- fread("application_train_cleaned.csv")
+bureau <- fread("bureau_joined_cleaned.csv") # joined bureau and bureau balance data
+```
+
+## Merging
+
+The cleaned application dataset was merged with two auxiliary datasets, bureau and bureau_balance, to offer more insight into the analytical problem. Datasets were flattened then merged after initial cleaning. Additional cleaning was required after the merging, primarily imputing NAs in additional columns for unique loan IDs that were not found within the auxiliary datasets.
+
+```{r, include = FALSE}
+merge <- application_train |>
+  left_join(bureau, by = "SK_ID_CURR")
+
+head(merge)
+sum(is.na(merge$SK_ID_BUREAU))
+
+# Suppress output for this portion
+na_summary <- merge |> 
+  summarise(across(everything(), ~ sum(is.na(.)))) |>
+  pivot_longer(everything(), names_to = "column", values_to = "missing_count") |>
+  filter(missing_count > 0) 
+
+na_list <- setNames(as.list(na_summary$missing_count), na_summary$column) 
+na_list
+
+```
+
+After merging, we checked the number of rows from the application-bureau intersect, application, and bureau datasets to validate a successful join. Below is the  summary table of row counts.
+```{r, echo = FALSE}
+# Calculate the row count values
+intersect <- length(intersect(application_train$SK_ID_CURR, bureau$SK_ID_CURR))
+unique_app <- length(unique(application_train$SK_ID_CURR))
+unique_bureau <- length(unique(bureau$SK_ID_CURR))
+
+# Create a data.table with named columns
+summary_dt <- data.table(
+  Metric = c("Intersection Count", "Unique IDs in Application_Train", "Unique IDs in Bureau"),
+  Value = c(intersect, unique_app, unique_bureau)
+)
+
+# Print or return the table
+summary_dt
+
+```
+
+We considered the join successful as the intersect data table had a similar row count as the original data tables.
+
+
+## Cleaning
+
+After merging, there was additional cleaning to ensure the data was ready for modeling. Adjustments included:
+
+ - Imputing missing values where the unique loan ID from the application table wasn't present in the auxiliary datasets. These values were imputed with zeros or appropriate placeholders based on domain knowledge. 
+ - Removing irrelevant or highly incomplete columns (such as AMT_ANNUITY and CREDIT_CURRENCY) helped streamline the final feature set.
+ - The target variable was re-ordered to ensure the majority class (0) came before the minority class.
+ 
+After merging with the bureau datasets, this left us with 48 variables, including the target and 2 ID variables. A table with the list of the imputations into the auxiliary datasets is included below.
+
+```{r, echo = FALSE}
+# Reorder TARGET variable
+merge$TARGET <- factor(merge$TARGET, levels = c("0", "1"))
+
+# Convert to numeric (this will now give 0 and 1 as expected) for the target variable
+merge$TARGET <- as.numeric(merge$TARGET) - 1
+
+# Select all predictors and exclude the identifiers
+merge <- merge |>
+  select(-SK_ID_CURR, -SK_ID_BUREAU)
+```
+
+
+```{r, echo = FALSE}
+var <- c("SK_ID_BUREAU", "CREDIT_TYPE", "STATUS", "DAYS_CREDIT", "CREDIT_DAY_OVERDUE", 
+         "DAYS_CREDIT_ENDDATE", "DAYS_ENDDATE_FACT", "AMT_CREDIT_MAX_OVERDUE", 
+         "CNT_CREDIT_PROLONG", "AMT_CREDIT_SUM", "AMT_CREDIT_SUM_DEBT", 
+         "AMT_CREDIT_SUM_LIMIT", "AMT_CREDIT_SUM_OVERDUE", "DAYS_CREDIT_UPDATE", 
+         "CREDIT_ACTIVE", "MONTHS_BALANCE")
+imp <- c(0, "None", "X", 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0)
+imp_var <- data.frame(Variable = var, Imputation = imp, stringsAsFactors = FALSE)
+print(imp_var)
+```
+
+```{r, include = FALSE}
+# Fill in missing data with 0s
+impute_numeric_col <- function(df, col_name, strategy = "zero") {
+  # Check if the specified column exists
+  if (!col_name %in% names(df)) {
+    warning(paste("Column", col_name, "not found in df. Returning original df."))
+    return(df)
+  }
+  # Check if it's numeric
+  if (!is.numeric(df[[col_name]])) {
+    warning(paste("Column", col_name, "is not numeric. Returning original df."))
+    return(df)
+  }
+  
+  # Determine the fill value based on the strategy
+  fill_val <- NA
+  if (strategy == "zero") {
+    fill_val <- 0
+  } else if (strategy == "none") {
+    fill_val <- "None"
+  } else if (strategy == "X") {
+    fill_val <- "X"
+  } else {
+    stop("strategy must be one of 'zero', 'none', or 'X'")
+  }
+  
+  # Replace NA with the chosen fill value
+  df[[col_name]][is.na(df[[col_name]])] <- fill_val
+  
+  return(df)
+}
+
+# Remove AMT_ANNUITY.y and CREDIT_CURRENCY because of lack of contribution to the model
+merge <- merge |>
+  select(-AMT_ANNUITY.y, -CREDIT_CURRENCY)
+
+#colnames(merge)
+
+# Impute NAs in CREDIT_TYPE with "None"
+impute_numeric_col(merge, "CREDIT_TYPE", strategy = "none")
+
+# Impute NAs in STATUS with "X"
+impute_numeric_col(merge, "STATUS", strategy = "X")
+
+for (col in names(merge)) {
+  if (is.numeric(merge[[col]])) {  # Check if column is numeric
+    merge <- impute_numeric_col(merge, col, strategy = "zero")
+  }
+}
+```
+```{r, echo = FALSE}
+#head(merge)
+cat("\nThe total number of NA in the merged dataset is:", sum(is.na(merge)))
+```
+
+
+
+
+
+Note the Status column imputation was because within the column description, "X" means unknown. 
+
+## Downsample
+
+The original dataset was highly imbalanced with a 92/8 split on positive/negative class. Our initial attempts at modeling showed a high potential for overfitting due to this imbalance. We opted to down sample the majority class, ultimately achieving a 70/30 balance for training. 
+
+```{r, include = FALSE}
+downsample_target <- function(df, target_col, ratio = 1.0, seed = 42) {
+  # Convert target_col to string if it's a symbol
+  target_col <- rlang::ensym(target_col)  # if you want tidy evaluation
+  
+  # Separate majority/minority
+  minority_df <- df %>% dplyr::filter(!!target_col == 1)
+  majority_df <- df %>% dplyr::filter(!!target_col == 0)
+  
+  set.seed(seed)
+  # Desired majority size
+  desired_majority_size <- floor(ratio * nrow(minority_df))
+  
+  # Downsample majority
+  majority_downsampled <- majority_df %>%
+    dplyr::sample_n(size = desired_majority_size)
+  
+  # Combine
+  combined_df <- dplyr::bind_rows(minority_df, majority_downsampled)
+  
+  return(combined_df)
+}
+```
+```{r, echo = FALSE}
+merge_ds <- downsample_target(merge, TARGET, ratio = 2.33, seed = 123)
+merge_ds |>
+  count(TARGET) |>
+  mutate(percentage = n / sum(n) * 100) |>
+  arrange(desc(n))
+```
+
+# Modeling
+
+## Partition the dataset
+
+We partitioned the cleaned dataset into an 80/20 split for training and testing.
+
+```{r, echo = FALSE}
+# Split into train/test sets (80/20)
+set.seed(123)
+train_index <- createDataPartition(merge_ds$TARGET, p = 0.8, list = FALSE)
+train_data <- merge_ds[train_index, ]
+test_data <- merge_ds[-train_index, ]
+train_labels <- merge_ds$TARGET[train_index]
+test_labels <- merge_ds$TARGET[-train_index]
+```
+
+## Run Logistic Regression
+
+We used a basic logistic regression as a benchmark for our model evaluation. Below is the model summary.
+
+```{r, echo = FALSE, warning = FALSE}
+# Fit logistic regression model
+model1 <- glm(TARGET ~ NAME_CONTRACT_TYPE + FLAG_OWN_CAR + DAYS_EMPLOYED + NAME_EDUCATION_TYPE + EXT_SOURCE_1 +  EXT_SOURCE_2 + EXT_SOURCE_3, data = train_data, family = binomial)
+
+# View model summary
+summary(model1)
+
+# Predict probabilities on the same dataset
+pred_probs <- predict(model1, newdata = test_data, type = "response")
+
+# Compute the ROC curve
+roc_curve <- roc(test_data$TARGET, pred_probs)
+
+# Get the AUC score
+auc_score <- auc(roc_curve)
+
+# Print AUC for the logistic regression model
+print(round(auc_score, 2))
+```
+
+The AUC score for the logistic regression model is 0.70, which is a good starting point for our model evaluation and will be our benchmark for comparison with the other models.
+
+### Evaluate LR model
+
+In evaluating our logistic model from the exploratory data analysis, we identified the significant features in the table below. These variables helped us in feature engineering and adjusting model parameters.
+
+```{r, echo = FALSE}
+# Extract coefficients from logistic regression model
+logit_summary <- summary(model1)
+
+# Convert coefficients to a data frame
+logit_coeffs <- as.data.frame(logit_summary$coefficients)
+
+# Rename columns for clarity
+colnames(logit_coeffs) <- c("Estimate", "Std_Error", "Z_Value", "P_Value")
+
+# Compute odds ratios (exponentiated coefficients)
+logit_coeffs$Odds_Ratio <- exp(logit_coeffs$Estimate)
+
+# Filter only significant variables (p < 0.05)
+significant_features <- logit_coeffs %>%
+  filter(P_Value < 0.05) %>%
+  arrange(P_Value) %>%  # Sort by smallest P-value (most significant)
+  head(6)  # Select top 6 features
+
+# Print only the top 6 most predictive features
+print(significant_features)
+
+```
+
+## Train & Evaluate Random Forest Model
+
+We trained six random forest models in the hopes that they would perform better than our benchmark logistic model. Unfortunately, because of the extreme imbalance in the TARGET variable, the random forest ended up chronically overfitting on the train set and therefore performing very poorly on the test set, despite downsampling to try and prevent this. Despite trying several different variations of the model, we were unable to solve the overfitting issue so we moved on to trying gradient boosting.
+
+```{r, echo = FALSE}
+# Train the Random Forest model 2
+# set.seed(123)
+# model2 <- randomForest(TARGET ~ . -ORGANIZATION_TYPE, data = train_merge_ds,
+#                    	ntree = 500,
+#                    	mtry = sqrt(ncol(train_merge_ds) - 1),
+#                    	importance = TRUE)
+# 
+# # Evaluate model 2
+# # View sorted importance of each variable
+# importance_values <- importance(model2)  # Get feature importance scores
+# importance_values
+# sorted_importance <- importance_values[order(-importance_values[, 1]), ]  # Sort by first column (MeanDecreaseGini)
+# sorted_importance
+# 
+# # Make predictions for model 2 on the train set
+# train_predictions_m2 <- predict(model2, newdata = train_merge_ds, type = "response")
+# train_predictions_m2 <- as.numeric(as.character(train_predictions_m2)) # convert to numeric to calculate ROC
+# 
+# # Make predictions for model 2 on the test set
+# test_predictions_m2 <- predict(model2, newdata = validation_merge_ds, type = "response")
+# test_predictions_m2 <- as.numeric(as.character(test_predictions_m2)) # convert to numeric to calculate ROC
+# 
+# # Calculate AUC for model 2 for train set
+# train_roc_m2 <- roc(train_merge_ds$TARGET, train_predictions_m2)
+# train_auc_m2 <- auc(train_roc_m2)
+# print(paste("AUC for train set:", train_auc_m2)) # AUC = 1.00
+# 
+# # Calculate AUC for model 2 for test set
+# test_roc_m2 <- roc(validation_merge_ds$TARGET, test_predictions_m2)
+# test_auc_m2 <- auc(test_roc_m2)
+# print(paste("AUC for test set:", test_auc_m2)) # AUC = 0.61
+# 
+# 
+# # Train Random Forest model 3
+# model3 <- randomForest(TARGET ~ . -ORGANIZATION_TYPE, data = train_merge_ds,
+#                    	ntree = 500,
+#                    	mtry = sqrt(ncol(train_merge_ds) - 1),
+#                    	importance = TRUE,
+#                    	classwt = c(0.43, 2.33))
+# 
+# # Evaluate model 3
+# # Make predictions for model 3 on the train set
+# train_predictions_m3 <- predict(model3, newdata = train_merge_ds, type = "response")
+# train_predictions_m3 <- as.numeric(as.character(train_predictions_m3)) # convert to numeric to calculate ROC
+# 
+# # Make predictions for model 3 on the test set
+# test_predictions_m3 <- predict(model3, newdata = validation_merge_ds, type = "response")
+# test_predictions_m3 <- as.numeric(as.character(test_predictions_m3)) # convert to numeric to calculate ROC
+# 
+# # Calculate AUC for model 3 for train set
+# train_roc_m3 <- roc(train_merge_ds$TARGET, train_predictions_m3)
+# train_auc_m3 <- auc(train_roc_m3)
+# print(paste("AUC for train set:", train_auc_m3)) # AUC = 1.00
+# 
+# # Calculate AUC for model 3 for test set
+# test_roc_m3 <- roc(validation_merge_ds$TARGET, test_predictions_m3)
+# test_auc_m3 <- auc(test_roc_m3)
+# print(paste("AUC for test set:", test_auc_m3)) # AUC = 0.58
+# 
+# # Train Random Forest model 4
+# model4 <- randomForest(TARGET ~ . -ORGANIZATION_TYPE, data = train_merge_ds,
+#                    	ntree = 200,
+#                    	maxnodes = 30,
+#                    	nodesize = 10,
+#                    	mtry = sqrt(ncol(train_merge_ds) - 1),
+#                    	importance = TRUE)
+# # Evaluate model 4
+# # Make predictions for model 4 on the train set
+# train_predictions_m4 <- predict(model4, newdata = train_merge_ds, type = "response")
+# train_predictions_m4 <- as.numeric(as.character(train_predictions_m4)) # convert to numeric to calculate ROC
+# 
+# # Make predictions for model 4 on the test set
+# test_predictions_m4 <- predict(model4, newdata = validation_merge_ds, type = "response")
+# test_predictions_m4 <- as.numeric(as.character(test_predictions_m4)) # convert to numeric to calculate ROC
+# 
+# # Calculate AUC for model 4 for train set
+# train_roc_m4 <- roc(train_merge_ds$TARGET, train_predictions_m4)
+# train_auc_m4 <- auc(train_roc_m4)
+# print(paste("AUC for train set:", train_auc_m4)) # AUC = 0.54
+# 
+# # Calculate AUC for model 4 for test set
+# test_roc_m4 <- roc(validation_merge_ds$TARGET, test_predictions_m4)
+# test_auc_m4 <- auc(test_roc_m4)
+# print(paste("AUC for test set:", test_auc_m4)) # AUC = 0.54
+# 
+# # Train Random Forest model 5
+# model5 <- randomForest(TARGET ~ EXT_SOURCE_3 + EXT_SOURCE_2 + DAYS_BIRTH + DAYS_CREDIT_UPDATE + DAYS_CREDIT + DAYS_ENDDATE_FACT + AMT_CREDIT + AMT_GOODS_PRICE + AMT_ANNUITY.x + AMT_INCOME_TOTAL + DAYS_CREDIT_ENDDATE + DAYS_ID_PUBLISH + CODE_GENDER + DAYS_EMPLOYED + CREDIT_TYPE + OWN_CAR_BIN + NAME_INCOME_TYPE + AMT_CREDIT_SUM + STATUS + EXT_SOURCE_1, data = train_merge_ds,
+#                    	ntree = 500,
+#                    	mtry = sqrt(ncol(train_merge_ds) - 1),
+#                    	importance = TRUE)
+# 
+# # Evaluate model 5
+# # Make predictions for model 5 on the train set
+# train_predictions_m5 <- predict(model5, newdata = train_merge_ds, type = "response")
+# train_predictions_m5 <- as.numeric(as.character(train_predictions_m5)) # convert to numeric to calculate ROC
+# 
+# # Make predictions for model 5 on the test set
+# test_predictions_m5 <- predict(model5, newdata = validation_merge_ds, type = "response")
+# test_predictions_m5 <- as.numeric(as.character(test_predictions_m5)) # convert to numeric to calculate ROC
+# 
+# # Calculate AUC for model 5 for train set
+# train_roc_m5 <- roc(train_merge_ds$TARGET, train_predictions_m5)
+# train_auc_m5 <- auc(train_roc_m5)
+# print(paste("AUC for train set:", train_auc_m5)) # AUC = 1.00
+# 
+# # Calculate AUC for model 5 for test set
+# test_roc_m5 <- roc(validation_merge_ds$TARGET, test_predictions_m5)
+# test_auc_m5 <- auc(test_roc_m5)
+# print(paste("AUC for test set:", test_auc_m5)) # AUC = 0.61
+# 
+# # Train Random Forest model 6
+# model6 <- randomForest(TARGET ~ EXT_SOURCE_3 + EXT_SOURCE_2 + DAYS_BIRTH + DAYS_CREDIT_UPDATE + DAYS_CREDIT + DAYS_ENDDATE_FACT + AMT_CREDIT + AMT_GOODS_PRICE + AMT_ANNUITY.x + AMT_INCOME_TOTAL + DAYS_CREDIT_ENDDATE + DAYS_ID_PUBLISH + CODE_GENDER + DAYS_EMPLOYED + CREDIT_TYPE + OWN_CAR_BIN + NAME_INCOME_TYPE + AMT_CREDIT_SUM + STATUS + EXT_SOURCE_1, data = train_merge_ds,
+#                    	ntree = 500,
+#                    	importance = TRUE)
+# 
+# # Evaluate model 6
+# # Make predictions for model 6 on the train set
+# train_predictions_m6 <- predict(model6, newdata = train_merge_ds, type = "response")
+# train_predictions_m6 <- as.numeric(as.character(train_predictions_m6)) # convert to numeric to calculate ROC
+# 
+# # Make predictions for model 6 on the test set
+# test_predictions_m6 <- predict(model6, newdata = validation_merge_ds, type = "response")
+# test_predictions_m6 <- as.numeric(as.character(test_predictions_m6)) # convert to numeric to calculate ROC
+# 
+# # Calculate AUC for model 6 for train set
+# train_roc_m6 <- roc(train_merge_ds$TARGET, train_predictions_m6)
+# train_auc_m6 <- auc(train_roc_m6)
+# print(paste("AUC for train set:", train_auc_m6)) # AUC = 1.00
+# 
+# # Calculate AUC for model 6 for test set
+# test_roc_m6 <- roc(validation_merge_ds$TARGET, test_predictions_m6)
+# test_auc_m6 <- auc(test_roc_m6)
+# print(paste("AUC for test set:", test_auc_m6)) # AUC = 0.61
+```
+
+## Gradient Boosting
+
+Earlier versions of this model struggled with overfitting to the training data, with the difference between the train and test Area Under the Curve (AUC) as high as 0.09. Initial adjustments improved the train AUC but did not lead to significant gains in the test AUC. To mitigate overfitting, the following adjustments were made:
+
+ - The learning rate (eta) was decreased from 0.3 to 0.1 to slow down the learning process, allowing the model to converge more smoothly.
+ - The tree depth was initially set as high as 6 but was reduced to 4 to prevent excessive model complexity.
+ - Regularization was significantly increased to reduce overfitting. The L2 regularization term (lambda) was raised to 10 to handle large coefficients, while the L1 regularization term (alpha) was increased from 0.5 to 1 to simplify the model.
+ - Early stopping was set to 40 rounds.
+ 
+Another challenge was the speed of processing, with one version taking up to an hour. To reduce this time, we decreased the number of rounds from 2,500 to 1,000, used nthread for parallel processing, and employed the histogram-based tree method. These adjustments resulted in a run time of approximately 8 seconds.
+
+
+### Train the GB model
+
+```{r, include = FALSE}
+# Record start time
+start_time <- Sys.time()
+
+# Convert data to optimized XGBoost matrix format
+train_matrix <- xgb.DMatrix(
+  data = as.matrix(train_data %>% 
+                     select(-TARGET) %>% 
+                     mutate(across(everything(), as.numeric))),
+  label = train_labels
+)
+
+# Ensure test_matrix is built from the correct test_data
+test_matrix <- xgb.DMatrix(
+  data = as.matrix(test_data %>% 
+                   select(-TARGET) %>% 
+                   mutate(across(everything(), as.numeric))),
+  label = test_labels
+)
+
+# Optimized parameters
+params <- list(
+  objective = "binary:logistic",  # Logistic regression with boosting
+  eval_metric = "auc",            # Use AUC as evaluation metric
+  eta = 0.03,                      # Increased learning rate for faster convergence
+  max_depth = 5,                  # Lower depth for efficiency
+  subsample = 0.8,                # 80% of rows per tree
+  colsample_bytree = 0.8,         # 80% of features per tree
+  lambda = 10,                    # L2 regularization (prevents overfitting)
+  alpha = 1,                      # L1 regularization (feature selection)
+  tree_method = "hist",           # Fast histogram-based method
+  nthread = 4                     # Use 4 CPU cores for parallel processing
+)
+
+# Train the XGBoost model with early stopping
+# Suppress output for this portion
+invisible({
+xgb_model <- xgb.train(
+  params = params,
+  data = train_matrix,
+  nrounds = 1000,  # Start with 1000, early stopping will determine the best count
+  watchlist = list(train = train_matrix, test = test_matrix),
+  early_stopping_rounds = 50,  # Stops if no improvement after 40 rounds
+  verbose = 1
+)
+})
+
+# Record end time
+end_time <- Sys.time()
+```
+
+
+```{r, echo = FALSE}
+# Calculate and print the runtime
+runtime <- end_time - start_time
+cat("Model training runtime:", runtime, "\n")
+
+# Print best iteration count
+best_nrounds <- xgb_model$best_iteration
+cat("Best number of boosting rounds:", best_nrounds, "\n")
+
+# Feature importance plot
+# Suppress output for this portion
+invisible({
+importance_matrix <- xgb.importance(model = xgb_model)
+})
+xgb.plot.importance(importance_matrix)
+```
+
+```{r}
+# Compute feature importance
+importance_matrix <- xgb.importance(model = xgb_model)
+
+# Extract and plot features ranked 4 to 9
+xgb.plot.importance(
+   importance_matrix[4:8, ], 
+   xlab = "Feature Importance (Gain)"
+)
+```
+
+
+### Evaluate Gradient Boost model (In Sample)
+
+```{r, echo = FALSE, warning=FALSE, message=FALSE}
+# AUC for in-sample data
+train_pred_probs <- predict(xgb_model, train_matrix)
+train_roc <- roc(train_labels, train_pred_probs)
+train_auc <- auc(train_roc)
+cat("AUC for training data:", round(train_auc, 2), "\n")
+```
+
+### Evaluate Gradient Boost model (Out of Sample)
+
+```{r, echo = FALSE, warning=FALSE, message=FALSE}
+# AUC for out-of-sample data
+test_pred_probs <- predict(xgb_model, test_matrix)
+test_roc <- roc(test_labels, test_pred_probs)
+test_auc <- auc(test_roc)
+cat("AUC for test data:", round(test_auc, 2), "\n")
+
+# Plot ROC Curve
+plot(test_roc, main = "ROC Curve for Test Data", col = "blue", lwd = 2)
+```
+
+Our in-sample AUC was 0.78 and our out-of-sample AUC was 0.75, which indicates that the model is performing well and is not overfitting.
+
+# Submit to Kaggle
+
+We tried to submit to Kaggle but struggled with a column discrepancy. After multiple attempts at merging and transforming test data, troubleshooting by all members of the group, we  were at an impasse. The error indicates there are discrepancies in columns of training and test data. 
+
+```{r, include= FALSE}
+# Load Kaggle Test Data & Bureau Data
+
+kaggle_test_data <- fread("application_test_cleaned.csv")
+bureau_data      <- fread("bureau_joined_cleaned.csv")
+
+
+# Merge Kaggle Test & Bureau Data
+
+kaggle_merged <- kaggle_test_data |>
+  left_join(bureau_data, by = "SK_ID_CURR")
+
+sum(is.na(kaggle_merged))
+```
+
+
+```{r, include = FALSE}
+# Create SK_ID_CURR for kaggle data
+kaggle_id_curr <- kaggle_merged$SK_ID_CURR
+
+# Remove AMT_ANNUITY.y and CREDIT_CURRENCY because of lack of contribution to the model
+kaggle_merged <- kaggle_merged |>
+  select(-AMT_ANNUITY.y, -CREDIT_CURRENCY, -SK_ID_CURR, -SK_ID_BUREAU)
+
+colnames(kaggle_merged)
+
+# Impute NAs in CREDIT_TYPE with "None"
+impute_numeric_col(kaggle_merged, "CREDIT_TYPE", strategy = "none")
+
+# Impute NAs in STATUS with "X"
+impute_numeric_col(kaggle_merged, "STATUS", strategy = "X")
+
+# Impute all other numeric columns as 0
+for (col in names(kaggle_merged)) {
+  if (is.numeric(kaggle_merged[[col]])) {  # Check if column is numeric
+    kaggle_merged <- impute_numeric_col(kaggle_merged, col, strategy = "zero")
+  }
+}
+
+colnames(kaggle_merged)
+colnames(merge_ds)
+head(kaggle_merged)
+```
+
+```{r, echo = FALSE}
+cat("\nThe total number of NA in the dataset is:", sum(is.na(kaggle_merged)))
+
+```
+
+
+```{r, include = FALSE}
+# Convert data to optimized XGBoost matrix format
+kaggle_test_matrix <- xgb.DMatrix(
+  data = as.matrix(kaggle_merged |>
+                     mutate(across(everything(), as.numeric))))
+
+sum(is.na(kaggle_merged))
+```
+
+
+
+```{r, include = FALSE}
+# Predict using the xgb.DMatrix
+pred_probs_kaggle <- predict(xgb_model, newdata = kaggle_test_matrix)
+
+colnames(kaggle_test_matrix)
+colnames(merge_ds)
+
+# Create submission file
+submission <- data.frame(SK_ID_CURR = as.integer(kaggle_id_curr), 
+                         TARGET = pred_probs_kaggle)
+write.csv(submission, "submission.csv", row.names = FALSE)
+```
+
+```{r, echo = FALSE}
+# Check submission file
+head(submission)
+```
+
+
+# Conclusion
+
+Throughout the modeling process, each group member tried a different modeling technique and then we came together with our results. After attempting several different modeling techniques including random forest, neural networks, logistic regression, and gradient boosting, we found that the gradient boost model performed the best over our logistic regression benchmark of AUC = 0.70 and 0.75, respectively. We used cross validation to test each of our models, except for the neural network which ran prohibitively slow, forcing us to remove it from the notebook. The gradient boost had an AUC of 0.78 when run on the train partition set and an AUC of 0.75 when run on the test partition set. The run time for the gradient boost model is printed in the output. Our final Kaggle score was 0.74.
+
+
+## Group Members and Contributions
+
+ - **Lindsey** - troubleshooted gradient boost models, created comments and explanatory, troubleshooted final notebook, helped with final Kaggle submission, helped with quality control and compilation of the final Rmd document
+ - **Ashley** - created neural network model, created many of the functions we used to speed things up and evaluate model performance, completed the final Kaggle submission and Rmd rendering, troubleshooted, completed quality control and compilation on the final Rmd document
+ - **Kyle** - created original gradient boost models, created comments and explanatory text, troubleshooted, evaluated the final model, created joined bureau dataset, helped with quality control and compilation of the final Rmd document
+ - **Eliza** - created random forest models, created cleaned train and test datasets, created comments and explanatory test, troubleshooted, helped with quality control and compilation of the final Rmd document
