@@ -1,0 +1,406 @@
+---
+title: "EDA Notebook"
+author: "Kyle Aagard"
+date: "2025-02-17"
+output: 
+  html_document:
+    toc: true            
+    toc_depth: 4          
+
+---
+# 1. Introduction
+
+## Business Problem:
+
+Home Default Credit Risk needs to identify potential customers who lack sufficient credit history for traditional credit approval but are at low risk of becoming delinquent on a loan. This can be accomplished by using alternative data sources, such as telecommunications data and transactional history. Home Default Credit Risk primarily operates in countries where potential customers use mobile phones to conduct most of their economic activities, rather than computers.
+
+## Analytics Problem:
+
+The analytics problem will involve improving upon the baseline, which is the majority class rate of 92% of applicants who will not default on their loan. This is based on the target variable in the application_train.csv, labeled “TARGET.” TARGET is a binary variable where a 1 indicates that the client had difficulty making a payment for an undefined number of days across another undefined number of installments.
+
+## Purpose:
+
+This notebook’s goal is to explore the data from the application_train.csv and bureau.csv datasets. The exploration will attempt to answer the following questions:
+
+1. Is the data unbalanced with respect to the target variable?
+2. What is the accuracy of a simple model consisting of the majority class classifier?
+3. What is the relationship between the target and predictions, specifically, what are the 10 strongest predictors of the target variable?
+4. What is the scope of missing data?
+5. What are potential solutions for handling missing data?
+6. Do the values in the data make sense? Can these values be cleaned or imputed?
+7. How will removing, cleaning, or imputing data change the sample size?
+8. Are there columns with near-zero or zero variance?
+9. Will the data need to be transformed in order to be used in the model?
+10. Will additional data from the bureau.csv file improve the model's fitness?
+11. What will happen to the sample size if additional data is joined into the training dataset?
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE, message = F, warning = F)
+
+pacman::p_load(tidyverse, gt)
+# gt package is for table formatting
+
+library(skimr)
+library(Hmisc)
+library(kableExtra)
+library(janitor)
+library(ggplot2)
+
+
+# Get data from CSV files
+train <- read.csv("application_train.csv")
+bureau <-read.csv("bureau.csv")
+bureau_balance <- read.csv("bureau_balance.csv")
+POS_CASH_balance <- read.csv("POS_CASH_balance.csv")
+credit_card_balance <- read.csv("credit_card_balance.csv")
+previous_application <- read.csv("previous_application.csv")
+installments_payments <- read.csv("installments_payments.csv")
+```
+# 2. Data Description
+
+There are several data sets available for use in a potential model:
+
+1.	The application_{train|test}.csv - The columns of data are the same for both the train set and the test set. I will focus on the data in application_train.csv, which contains 307,511 observations and 122 variables. Besides the TARGET variable, some variables, such as SK_ID_CURR, have no predictive value as they simply identify individual loans in the sample, paired with the loan application data. The dataset as a whole contains a mix of binary, categorical, factor, and numerical data. Much of the data is demographic, describing attributes such as occupation type, age, family size, etc. A large portion of the data pertains to where the client lives, housing details, employment history, and the type of area they live and work in. Some data focuses on social atmospherics and whether there is an indication of default. Information about work and personal phone numbers is also captured. Many columns are dedicated to whether the client provided 21 different documents, though there is no description of what these documents are. The final set of columns provides the number of credit inquiries ranging from the hour up to a year prior to the application. There is a large amount of missing data and potential for multicollinearity, which will be explored in more detail later
+
+2.	The bureau.csv dataset consists of 1,716,428 observations and 17 variables. In addition to the SK_ID_CURR column, it contains a SK_BUREA_ID identifier for each loan application. These columns provide information about current credits or loans, such as amounts, annual annuities, overdue amounts, and the type of credit. Most of these columns are numeric, but some are categorical.
+
+3.	The bureau_balance.csv dataset contains 27,299,925 observations and 3 variables, including the SK_BUREA_ID column, as well as the date of a credit balance and its status.
+
+4.	The POS_CASH_balance.csv dataset contains 10,001,358 observations and 8 variables. This data contains information about previous loans provided by Home Credit, as well as the current loan ID that matches the sample. It includes details such as the term of the previous loan, the length of time the loan has been past due, and the number of installments remaining.
+
+5.	The credit_card_balance.csv dataset contains 10,001,358 observations and 23 variables. This dataset focuses on the client’s credit limits, how often they use credit, their spending habits, and how much they have been paying on their credit. It appears to capture much of the transactional behavior of the client.
+
+6.	The previous_application.csv dataset contains 1,670,214 observations and 37 variables. This dataset includes information about previous loan applications made by the client. It contains data such as the amount of credit applied for, the down payment, the purpose of the loan, the chosen payment method, reasons for rejection, and other details related to those applications.
+
+7.	The installments_payments.csv dataset contains 13,605,401 observations and 8 variables. It contains data on previous loans received by the client from Home Credit, including an installment calendar (where 0 indicates a credit card), what was supposed to be paid, what was actually paid, and the timing of payments.
+
+The volume of data is quite large. For this exploratory data analysis (EDA), I will concentrate on application_train.csv, bureau.csv, and credit_card_balance.csv to provide insight into transactional data from potential customers. Due to the size of the dataset, I sampled 15% of the data to speed up processing fromt the application_train.csv. This still left me with 46,126 rows to work with.
+```{r pressure, echo=TRUE}
+# Randomly sample 15% of the rows in an object called index
+set.seed(124)
+index <- sample(x = 1:nrow(train), size = nrow(train)*.15, replace = F)
+
+# Subset train using index to create a 15% train_fold
+train_fold <- train[index, ]
+
+# Subset train using index to create a 85% validation fold
+validation_fold <- train[-index, ]
+```
+
+## Missing Data
+
+### Train
+
+For missing data, I decided to remove any column where 50% or more of the observations were missing.
+
+The exception was for columns where the missing values indicated a meaningful categorical difference—such as whether or not a customer was overdue on credit payments, or if the age of a car was left blank because the customer did not own a car. In these cases, I transformed the column into a binary or categorical variable.
+
+```{r echo = TRUE, results ='hide'}
+# Function to find variables with N/As in the training fold
+count_missings <- function(x) sum(is.na(x))
+
+# Display the missing data by column in the training fold
+train_fold |> 
+  summarize_all(count_missings)
+```
+### Bureau
+
+Missing data for bureau.csv
+```{r}
+# Function to find variables with N/As in the training fold
+count_missings <- function(x) sum(is.na(x))
+
+# Display the missing data by column in the training fold
+bureau |> 
+  summarize_all(count_missings)
+```
+# 3. Exploratory Data Analysis
+
+## Target Variable
+
+The target variable is binary and is labeled TARGET, with a value of 1 indicating that the client had difficulty making payments, and 0 indicating that they did not. The majority class of the target variable has a probability of 0.92, meaning that 92% of clients did not experience difficulty making payments.
+
+```{r}
+# Calculate the majority class of the target variable
+train_fold |>
+  summarise(calculated_majority_class = mean(TARGET ==0))
+
+```
+
+## Train
+
+For the data in train_fold, I also eliminated columns with little to no variance, such as FLAG_MOBIL, which indicates whether the client provided their mobile phone number. There were no missing values, and every client had provided a phone number. Eliminating columns like this allowed me to further narrow down the number of columns. My bar for little to no variance was 90%, unless otherwise noted.
+
+Several columns captured the number of credit bureau inquiries, ranging from the hour preceding the application up to a year prior to the application. Since each of these predictors covers a distinct time frame, I combined them into a single column.
+
+This approach allowed me to reduce the number of predictors to 47, while keeping the sample size at 46,126 observations.
+
+```{r}
+# Prepare a data set for EDA by keeping the columns that are not missing large amounts of data or have almost no variance
+t <- train_fold |>
+  select(SK_ID_CURR, TARGET, NAME_CONTRACT_TYPE, CODE_GENDER, FLAG_OWN_CAR, FLAG_OWN_REALTY, 
+         CNT_CHILDREN, AMT_INCOME_TOTAL, AMT_CREDIT, AMT_ANNUITY, AMT_GOODS_PRICE,
+         NAME_TYPE_SUITE, NAME_INCOME_TYPE, NAME_EDUCATION_TYPE, NAME_FAMILY_STATUS, NAME_HOUSING_TYPE, 
+         REGION_POPULATION_RELATIVE, DAYS_BIRTH, DAYS_EMPLOYED, DAYS_REGISTRATION, DAYS_ID_PUBLISH,
+         OWN_CAR_AGE, FLAG_EMP_PHONE, FLAG_WORK_PHONE, FLAG_PHONE, OCCUPATION_TYPE, CNT_FAM_MEMBERS,
+         REGION_RATING_CLIENT, REGION_RATING_CLIENT_W_CITY, WEEKDAY_APPR_PROCESS_START, HOUR_APPR_PROCESS_START, 
+         REG_CITY_NOT_LIVE_CITY, REG_CITY_NOT_WORK_CITY, LIVE_CITY_NOT_WORK_CITY, ORGANIZATION_TYPE, EXT_SOURCE_2,
+         EXT_SOURCE_3, FONDKAPREMONT_MODE, HOUSETYPE_MODE, EMERGENCYSTATE_MODE, OBS_30_CNT_SOCIAL_CIRCLE, 
+         DEF_30_CNT_SOCIAL_CIRCLE, OBS_60_CNT_SOCIAL_CIRCLE, DEF_60_CNT_SOCIAL_CIRCLE, DAYS_LAST_PHONE_CHANGE, 
+         FLAG_DOCUMENT_3, AMT_REQ_CREDIT_BUREAU_HOUR, AMT_REQ_CREDIT_BUREAU_DAY, AMT_REQ_CREDIT_BUREAU_WEEK, 
+         AMT_REQ_CREDIT_BUREAU_MON, AMT_REQ_CREDIT_BUREAU_QRT, AMT_REQ_CREDIT_BUREAU_YEAR)
+
+# Combine the credit inquires into one column
+t <- t |>
+  mutate(CREDIT_ENQUIRIES = AMT_REQ_CREDIT_BUREAU_HOUR + AMT_REQ_CREDIT_BUREAU_DAY + AMT_REQ_CREDIT_BUREAU_WEEK, AMT_REQ_CREDIT_BUREAU_MON,
+         AMT_REQ_CREDIT_BUREAU_YEAR)
+
+# Remove the individual credit inquires to avoid confusion and multicollinearity
+t <- t |>
+  select(-c(AMT_REQ_CREDIT_BUREAU_HOUR, AMT_REQ_CREDIT_BUREAU_DAY, AMT_REQ_CREDIT_BUREAU_WEEK, AMT_REQ_CREDIT_BUREAU_MON, AMT_REQ_CREDIT_BUREAU_QRT, 
+            AMT_REQ_CREDIT_BUREAU_YEAR))
+```
+
+### Train Predictors
+
+To identify the strongest predictors of default in the train dataset, I created a loop using a logistic regression model to find which variables had the most statistically significant logistic regression coefficient in predicting default. For the sake of brevity, I limited the results displayed to the top 10 strongest predictors. 
+
+The top 5 predictors, based logistic regression coefficients or log odd, are:
+
+1. NAME_EDUCATION_TYPE = 10.73
+2. REGION_POPULATION_RELATIVE = -9.73
+3. NAME_INCOME_TYPE = 8.97
+4. EXT_SOURCE_3 = -3.17
+5. EXT_SOURCE_2 = -2.55
+
+```{r}
+# Initialize an empty list to store results
+results <- list()
+
+# Loop through all predictor variables (excluding 'TARGET' and 'SK_ID_CURR')
+predictors <- setdiff(names(t), c("TARGET", "SK_ID_CURR"))
+
+# Loop through each predictor and fit a logistic regression model
+for (predictor in predictors) {
+  
+  # Create a formula for logistic regression
+  formula <- as.formula(paste("TARGET ~", predictor))
+  
+  # Fit the logistic regression model
+  model <- glm(formula, data = t, family = binomial())
+  
+  # Get the summary of the model
+  model_summary <- summary(model)
+  
+  # Extract coefficient of the predictor from the model summary
+  coefficient <- model_summary$coefficients[2, 1]  # Coefficient for the predictor
+  
+  # Store the results (predictor and its coefficient)
+  results[[predictor]] <- coefficient
+}
+
+# Convert the results list into a data frame for easier viewing
+results_df <- data.frame(Predictor = names(results), Coefficient = unlist(results))
+
+# Sort the results by coefficient magnitude (largest to smallest)
+results_df <- results_df |>
+  arrange(desc(abs(Coefficient)))
+
+# View the results
+top_10_results <- head(results_df, 10)
+print(top_10_results)
+
+```
+
+
+## Bureau Join and Predictors
+
+To gain potential insights from transactional data, I converted AMT_CREDIT_MAX_OVERDUE (which contained mostly NAs) into a binary variable, CREDIT_OVERDUE, indicating whether the client had any overdue credit. I then joined the bureau.csv data with the train_fold dataset, which increased the sample size to 226,396. This larger sample size may introduce challenges due to the increased amount of data to process.
+
+One column from bureau.csv had a logistic regression coefficient that made the top 10:
+
+CREDIT_ACTIVE = 1.38
+
+```{r}
+# Prepare a data set for EDA by keeping the columns that are not missing large amounts of data or have almost no variance
+b <- bureau |>
+  select(SK_ID_CURR, CREDIT_ACTIVE, DAYS_CREDIT, CREDIT_DAY_OVERDUE, DAYS_ENDDATE_FACT, AMT_CREDIT_SUM, 
+         AMT_CREDIT_SUM_DEBT, AMT_CREDIT_SUM_LIMIT, CREDIT_TYPE, DAYS_CREDIT_UPDATE, AMT_ANNUITY, AMT_CREDIT_MAX_OVERDUE)
+
+# Convert NAs to a No
+b <- b |>
+  mutate(CREDIT_OVERDUE = if_else(is.na(AMT_CREDIT_MAX_OVERDUE), "No", "Yes"))
+
+# Remove old column to avoid confusion        
+b <- b |>
+  select(-AMT_CREDIT_MAX_OVERDUE)
+
+# Join bureau data with training data based on unique client identifier
+bt <- t |>
+  left_join(b, by = "SK_ID_CURR")
+
+# Initialize an empty list to store results
+results <- list()
+
+# Loop through all predictor variables (excluding 'TARGET' and 'SK_ID_CURR')
+predictors <- setdiff(names(bt), c("TARGET", "SK_ID_CURR"))
+
+# Loop through each predictor and fit a logistic regression model
+for (predictor in predictors) {
+  
+  # Create a formula for logistic regression
+  formula <- as.formula(paste("TARGET ~", predictor))
+  
+  # Fit the logistic regression model
+  model <- glm(formula, data = bt, family = binomial())
+  
+  # Extract coefficient estimate (2nd row = predictor, 1st column = estimate)
+  coef_estimate <- coef(summary(model))[2, 1]
+  
+  # Store the results (predictor and its coefficient)
+  results[[predictor]] <- coef_estimate
+}
+
+# Convert the results list into a data frame
+results_df <- data.frame(Predictor = names(results), Coefficient = unlist(results))
+
+# Sort by absolute value of coefficient, descending
+results_df <- results_df |>
+  arrange(desc(abs(Coefficient)))
+
+# View the top 10 predictors with the strongest coefficients
+top_10_coefficients <- head(results_df, 10)
+print(top_10_coefficients)
+
+```
+
+
+
+
+
+### Distribution of Predictors
+
+For visibility on how the data is distributed I am going to concentrate on the top five predictors of the joined table bt which are:
+
+1. NAME_EDUCATION_TYPE 
+2. REGION_POPULATION_RELATIVE 
+3. NAME_INCOME_TYPE 
+4. EXT_SOURCE_3 
+5. EXT_SOURCE_2 
+
+
+```{r, echo=FALSE, results='hide'}
+#Create a subset of the top five predictors
+top_five <- bt[, c("NAME_EDUCATION_TYPE", "REGION_POPULATION_RELATIVE", "NAME_INCOME_TYPE", "EXT_SOURCE_3", "EXT_SOURCE_2")]
+```
+
+
+```{r, echo = FALSE}
+#Use skim to show what is missing and identify potential outliers.
+skim(top_five)
+```
+
+
+
+## Vizualizations 
+
+### NAME_INCOME_TYPE
+
+The largest category was "Working," but other categories also had a high level of representation.
+
+```{r}
+# Create bar plot 
+ggplot(ti, aes(x = NAME_INCOME_TYPE, fill = NAME_INCOME_TYPE == "Working")) +
+  geom_bar() +
+  labs(title = "Type of Income", x = "Type", y = "Count") +
+  theme_minimal() +
+  theme(
+    axis.text.x = element_text(angle = 45, hjust = 1),
+    panel.grid = element_blank(),           
+    panel.background = element_blank(),     
+    plot.background = element_blank()       
+  ) +
+  scale_fill_manual(
+    values = c("TRUE" = "dodgerblue", "FALSE" = "orange"),
+    guide = "none"  # Removes the legend
+  )
+```
+
+
+
+
+### NAME_EDUCATION_TYPE
+
+The majority of clients fell under the "Secondary/Secondary Special" education category at over 30,000.
+
+```{r}
+# Create bar plot
+ggplot(t, aes(x = NAME_EDUCATION_TYPE, fill = NAME_EDUCATION_TYPE == "Secondary / secondary special")) +
+  geom_bar() +
+  labs(title = "Level of Education", x = "Level", y = "Count") +
+  theme_minimal() +
+  theme(
+    axis.text.x = element_text(angle = 45, hjust = 1),
+    panel.grid = element_blank(),           
+    panel.background = element_blank(),     
+    plot.background = element_blank()       
+  ) +
+  scale_fill_manual(
+    values = c("TRUE" = "dodgerblue", "FALSE" = "orange"),
+    guide = "none"  
+  )
+
+```
+
+# 4. Results
+
+
+## Questions and Answers
+
+1.Is the data unbalanced with respect to the target variable? 
+
+  Yes, 92% of clients did not have difficulty making their payments.
+ 	
+2.What is the accuracy for a simple model consisting of the majority class classifier?
+
+  The accuracy is 92% for the majority classifier. These are people who did not default on their loans.
+
+3.What is the relationship between target and predictions, specifically what are the ten strongest predictors of the target variable?
+
+  The ten strongest predictors are from the joined table of the application_train.csv and the bureau.csv: NAME_INCOME_TYPE,NAME_EDUCATION_TYPE, REGION_POPULATION_RELATIVE, EXT_SOURCE_3, EXT_SOURCE2, CREDIT_ACTIVE, FLAG_EMP_PHONE, NAME_CONTRACT_TYPE, REG_CITY_LIVE_CITY, and CODE_GENDER.
+  
+4. What is the scope of missing data? 
+
+  The scope of missing data is considerable, with many columns missing 50% or more of their values. By removing most of these columns and the columns that zero or near zero variance,the number of predictors was reduced to 47 variables in the training data set.
+  
+5. What are potential solutions for dealing with the missing data?
+
+  For most of the columns with 50% or more missing data, they will need to be removed. An exception is AMT_CREDIT_MAX_OVERDUE, which will need to be modified.
+  
+6. Do the values in the data make sense? Can these values be cleaned or imputed?
+
+  Not all of the values make sense; some will need to be cleaned or imputed. For example, some time-related values show a positive rather than a negative value, which is most likely a data entry error.
+
+7. How will removing, cleaning, or imputing data change the sample size?
+
+  If data is removed by column rather than by row, it should not reduce the sample size. Some data, such as AMT_CREDIT_MAX_OVERDUE, which had over 50% missing data, was converted into a binary variable.
+
+8. Are there columns with near-zero or zero variance?
+
+  Yes, an example is FLAG_MOBIL, there was was no variance and it will need to be removed.
+  
+9. Will the data need to be transformed in order to be used in the model?
+
+  Yes, much of the data will need to be imputed for columns missing less than 50% of their values or cleaned.
+  
+10. Will additional data from the bureau.csv file improve the models fitness?
+
+  Yes, by joining that data with the training data, several predictors from the bureau data set ranked in the top 10 for having the largest predictive value on the target variable.
+  
+11. What will happen to the sample size if additional data is joined into the  training data set?
+
+By joining the bureau data, the size of the training data set increased from 46,126 to 226,396. This is likely explained by clients having multiple lines of credit in that data set. While this may help build a more accurate model, it will slow down the process.
+
+# 5. Conclusion:
+
+The results are encouraging, suggesting that based on the available data, a model can be built to improve upon the majority class accuracy of 92% in predicting default. The top two predictors are categorical variables that are demographic in nature and not dependent on whether the individual has taken out a loan in the future. The most commonly used types of credit among clients are credit cards(over 150,000) or consumer credit(50,000), which should provide valuable insight into their transactional behavior and potential to default. Based on the results from the bureau.csv data, the additional data could significantly improve the accuracy of the prediction model. Given that the target variable is binary, this will most likely be a logistic regression model.
