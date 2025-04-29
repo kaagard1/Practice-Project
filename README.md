@@ -6,7 +6,7 @@ Home Default Credit Risk needs to identify potential customers who lack sufficie
 
 The goal of this project is to harness this transactional data and create a model that improves the ability to predict default for the unbanked community, who lack sufficient credit to be approved by traditional means.
 
-**Solution to the Problem***
+**Solution to the Problem**
 
 Our group used data from the bureau.csv and bureau_balance.csv files, which captured customers’ transaction behaviors, to supplement Home Credit’s application data. We first created a model using only the application data to serve as a baseline for comparison. Our new model incorporated the transactional data, which increased its AUC (Area Under the Curve) performance from 0.70 (baseline) to 0.75.
 
